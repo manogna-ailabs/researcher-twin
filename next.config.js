@@ -2,9 +2,6 @@
 const nextConfig = {
   output: 'standalone',
 
-  // Optimize for faster builds
-  swcMinify: true,
-
   // Reduce build time by skipping type checking (run separately)
   typescript: {
     ignoreBuildErrors: true,
