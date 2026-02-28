@@ -12,6 +12,7 @@ import { DEFAULT_RAG_TOP_K } from '@/lib/config/env'
 import { ollamaEmbedding } from '@/lib/server/ollama'
 import { chunkText, cosineSimilarity, keywordScore } from '@/lib/server/text'
 import { createHash } from 'crypto'
+import { promises as fs } from 'fs'
 
 export type RagSourceRole = 'publication' | 'thesis' | 'web' | 'other'
 
@@ -66,6 +67,34 @@ type RagStore = {
 }
 
 const RAG_STORE_PATH = resolveDataPath('rag', 'store.json')
+const EMPTY_STORE: RagStore = { documents: [], chunks: [] }
+
+let bundledSeedStoreCache: Partial<RagStore> | null = null
+
+async function readBundledSeedStore(): Promise<Partial<RagStore> | null> {
+  if (bundledSeedStoreCache) return bundledSeedStoreCache
+
+  try {
+    // Keep a hard fallback for serverless runtimes where runtime fs does not contain data/rag/store.json.
+    const module = await import('@/data/rag/store.json')
+    const payload = (module?.default || module) as Partial<RagStore>
+    bundledSeedStoreCache = payload
+    return payload
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'unknown error'
+    console.warn(`[ragStore] Bundled seed store import failed: ${reason}`)
+    return null
+  }
+}
+
+async function runtimeStoreFileExists(): Promise<boolean> {
+  try {
+    const stat = await fs.stat(RAG_STORE_PATH)
+    return stat.isFile()
+  } catch {
+    return false
+  }
+}
 
 function normalizeTextForHash(text: string): string {
   return text
@@ -413,10 +442,23 @@ function normalizeChunk(raw: unknown, documentsById: Map<string, RagDocument>): 
 }
 
 async function readStore(): Promise<RagStore> {
-  const rawStore = await readJsonFile<Partial<RagStore>>(RAG_STORE_PATH, {
-    documents: [],
-    chunks: [],
-  })
+  const hasRuntimeStoreFile = await runtimeStoreFileExists()
+  let rawStore = await readJsonFile<Partial<RagStore>>(RAG_STORE_PATH, EMPTY_STORE)
+  const fsHasData =
+    (Array.isArray(rawStore.documents) && rawStore.documents.length > 0)
+    || (Array.isArray(rawStore.chunks) && rawStore.chunks.length > 0)
+
+  if (!fsHasData && !hasRuntimeStoreFile) {
+    const bundled = await readBundledSeedStore()
+    const bundledHasData =
+      (Array.isArray(bundled?.documents) && bundled.documents.length > 0)
+      || (Array.isArray(bundled?.chunks) && bundled.chunks.length > 0)
+
+    if (bundledHasData) {
+      rawStore = bundled as Partial<RagStore>
+      console.warn('[ragStore] Using bundled seed store fallback because runtime store is empty.')
+    }
+  }
 
   const documents = Array.isArray(rawStore.documents)
     ? rawStore.documents
