@@ -16,7 +16,17 @@ export function resolveDataPath(...parts: string[]): string {
 }
 
 export async function ensureDir(dirPath: string): Promise<void> {
-  await fs.mkdir(dirPath, { recursive: true })
+  try {
+    await fs.mkdir(dirPath, { recursive: true })
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code
+    if (code === 'EROFS' || code === 'EACCES' || code === 'EPERM') {
+      // Read-only runtimes (for example serverless) can still read pre-bundled dirs.
+      const existing = await fs.stat(dirPath).catch(() => null)
+      if (existing?.isDirectory()) return
+    }
+    throw error
+  }
 }
 
 export async function ensureDataDirs(): Promise<void> {
@@ -31,7 +41,11 @@ export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T>
   try {
     const raw = await fs.readFile(filePath, 'utf8')
     return JSON.parse(raw) as T
-  } catch {
+  } catch (error) {
+    if (process.env.NODE_ENV !== 'test') {
+      const reason = error instanceof Error ? error.message : 'unknown error'
+      console.warn(`[fsStore] Falling back for unreadable JSON file: ${filePath} (${reason})`)
+    }
     return fallback
   }
 }

@@ -69,6 +69,7 @@ type RagIntent =
 
 type IntentContext = {
   intent: RagIntent
+  ragId: string
   chunks: RagChunk[]
   mentionedDocuments: RagDocument[]
   targetDocumentNames: string[]
@@ -623,12 +624,23 @@ async function retrieveIntentContext(params: {
   query: string
   topK: number
 }): Promise<IntentContext> {
-  const { ragId, query } = params
+  const { query } = params
   const topK = Math.max(1, params.topK)
-  const documents = await listRagDocuments(ragId)
+  let ragId = params.ragId
+  let documents = await listRagDocuments(ragId)
+  const retrievalNotes: string[] = []
+
+  if (!documents.length && ragId !== DEFAULT_RAG_ID) {
+    const fallbackDocs = await listRagDocuments(DEFAULT_RAG_ID)
+    if (fallbackDocs.length > 0) {
+      retrievalNotes.push(`Requested rag_id "${ragId}" is empty. Falling back to "${DEFAULT_RAG_ID}".`)
+      ragId = DEFAULT_RAG_ID
+      documents = fallbackDocs
+    }
+  }
+
   const mentionedDocuments = findMentionedDocuments(query, documents)
   const intent = detectIntent(query, mentionedDocuments)
-  const retrievalNotes: string[] = []
   const publicationTargets = mentionedDocuments
     .filter(doc => doc.sourceRole === 'publication')
     .slice(0, 4)
@@ -652,6 +664,7 @@ async function retrieveIntentContext(params: {
       retrievalNotes.push(`paper_specific hard filter applied: ${targetName}`)
       return {
         intent,
+        ragId,
         chunks: strictChunks.slice(0, Math.max(2, topK)),
         mentionedDocuments,
         targetDocumentNames: [targetName],
@@ -662,6 +675,7 @@ async function retrieveIntentContext(params: {
     retrievalNotes.push(`paper_specific hard filter had no results for ${targetName}`)
     return {
       intent,
+      ragId,
       chunks: [],
       mentionedDocuments,
       targetDocumentNames: [targetName],
@@ -703,6 +717,7 @@ async function retrieveIntentContext(params: {
       retrievalNotes.push(`paper_compare targeted papers: ${targetDocumentNames.join(', ')}`)
       return {
         intent,
+        ragId,
         chunks: merged,
         mentionedDocuments,
         targetDocumentNames,
@@ -779,6 +794,7 @@ async function retrieveIntentContext(params: {
     )
     return {
       intent,
+      ragId,
       chunks: finalChunks,
       mentionedDocuments,
       targetDocumentNames,
@@ -796,6 +812,7 @@ async function retrieveIntentContext(params: {
   retrievalNotes.push(`intent=${intent} fallback=unfiltered`)
   return {
     intent,
+    ragId,
     chunks: fallback,
     mentionedDocuments,
     targetDocumentNames,
@@ -923,15 +940,15 @@ function buildPrompt(params: {
 }
 
 export async function executeAgent(input: AgentExecutionInput): Promise<AgentExecutionOutput> {
-  const ragId = input.rag_id || DEFAULT_RAG_ID
+  const requestedRagId = input.rag_id || DEFAULT_RAG_ID
   const topK = input.topK ?? DEFAULT_RAG_TOP_K
   const intentContext = await retrieveIntentContext({
-    ragId,
+    ragId: requestedRagId,
     query: input.message,
     topK,
   })
   const topChunks = intentContext.chunks
-  const ragDocuments = await listRagDocuments(ragId)
+  const ragDocuments = await listRagDocuments(intentContext.ragId)
   const evidenceRefs = buildEvidenceReferences(topChunks, ragDocuments)
 
   const assetContext: string[] = []
